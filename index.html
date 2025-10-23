@@ -1,0 +1,345 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Baccarat Predictor con LSTM (Atajos y Deshacer)</title>
+    <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@3.13.0/dist/tf.min.js"></script>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            background-color: #f4f4f9;
+            padding: 20px;
+        }
+        .container {
+            background-color: #ffffff;
+            padding: 25px;
+            border-radius: 10px;
+            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+            max-width: 700px;
+            width: 100%;
+        }
+        h1 { color: #2c3e50; text-align: center; border-bottom: 2px solid #3498db; padding-bottom: 10px; }
+        .controls button {
+            padding: 12px 18px;
+            margin: 5px;
+            border: none;
+            border-radius: 6px;
+            cursor: pointer;
+            font-size: 16px;
+            font-weight: bold;
+            transition: background-color 0.3s;
+        }
+        #banker-btn { background-color: #e74c3c; color: white; }
+        #player-btn { background-color: #3498db; color: white; }
+        #tie-btn { background-color: #2ecc71; color: white; }
+        #train-btn { background-color: #f39c12; color: white; }
+        #clear-btn { background-color: #95a5a6; color: white; }
+        #undo-btn { background-color: #34495e; color: white; } /* Nuevo botón de deshacer */
+        
+        .history span {
+            display: inline-block;
+            padding: 5px 10px;
+            margin: 3px;
+            border-radius: 4px;
+            color: white;
+            font-weight: bold;
+        }
+        .B { background-color: #e74c3c; }
+        .P { background-color: #3498db; }
+        .T { background-color: #2ecc71; }
+
+        .prediction {
+            margin-top: 20px;
+            padding: 15px;
+            border: 2px dashed #2c3e50;
+            border-radius: 8px;
+            text-align: center;
+        }
+        #suggestion {
+            font-size: 1.6em;
+            font-weight: 700;
+            margin-top: 10px;
+        }
+        .pred-B { background-color: #fceceb; color: #c0392b; }
+        .pred-P { background-color: #e9f3fb; color: #2980b9; }
+        .status { margin-top: 15px; font-style: italic; color: #7f8c8d; }
+    </style>
+</head>
+<body>
+
+<div class="container">
+    <h1>Baccarat Predictor con LSTM (Atajos y Deshacer)</h1>
+    <p class="status" style="font-size: 0.8em; margin-bottom: 20px;">
+        **Atajos:** Banca (B), Jugador (P), Empate (T), Deshacer (Z), Entrenar (E).
+    </p>
+
+    <div class="controls">
+        <h2>Entrada de Datos:</h2>
+        <button id="banker-btn">Banca (B)</button>
+        <button id="player-btn">Jugador (P)</button>
+        <button id="tie-btn">Empate (T)</button>
+        <button id="undo-btn">Deshacer (Z)</button> <button id="train-btn">Entrenar (E) 🧠</button>
+        <button id="clear-btn">Limpiar Datos</button>
+        <p class="status" id="status-text">Modelo no entrenado. Ingresa datos y entrena.</p>
+    </div>
+
+    <div class="history">
+        <h2>Historial:</h2>
+        <div id="results-display">Aún no hay resultados...</div>
+    </div>
+
+    <div class="prediction">
+        <h2>Predicción LSTM para la Siguiente Mano:</h2>
+        <div id="suggestion">...</div>
+        <p id="probability-text" style="font-size: 0.9em; margin-top: 10px;"></p>
+    </div>
+</div>
+
+<script>
+    // --- Configuración LSTM y Variables Globales ---
+    const LOOK_BACK = 10; 
+    const FEATURE_SIZE = 3; 
+    const results = []; 
+    
+    let model = null;
+    let isTrained = false;
+
+    // Elementos del DOM
+    const resultsDisplay = document.getElementById('results-display');
+    const suggestionElement = document.getElementById('suggestion');
+    const statusText = document.getElementById('status-text');
+    const probabilityText = document.getElementById('probability-text');
+    
+    // Mapeo de resultados: B=0, P=1, T=2
+    const RESULT_MAP = { 'B': 0, 'P': 1, 'T': 2 };
+    const INVERSE_MAP = ['Banca (B)', 'Jugador (P)'];
+    
+    // --- Lógica de Machine Learning con LSTM ---
+
+    /** Crea un modelo de Red Neuronal Recurrente (LSTM) */
+    function createModel() {
+        if (model) model.dispose(); // Limpiar modelo anterior si existe
+        model = tf.sequential();
+        
+        model.add(tf.layers.lstm({ 
+            inputShape: [LOOK_BACK, FEATURE_SIZE], 
+            units: 50, 
+            returnSequences: false 
+        }));
+        
+        model.add(tf.layers.dropout({ rate: 0.2 }));
+        model.add(tf.layers.dense({ units: 2, activation: 'softmax' })); 
+        
+        model.compile({
+            optimizer: tf.train.adam(0.001), 
+            loss: 'categoricalCrossentropy',
+            metrics: ['accuracy']
+        });
+        statusText.textContent = "Modelo LSTM creado. Listo para entrenar con " + LOOK_BACK + " manos.";
+    }
+
+    /** Prepara los datos históricos para el entrenamiento */
+    function preprocessData() {
+        const encodedData = results.map(r => tf.oneHot(RESULT_MAP[r], FEATURE_SIZE).arraySync());
+        
+        if (encodedData.length < LOOK_BACK + 1) {
+            return null; 
+        }
+
+        const xs = []; 
+        const ys = []; 
+
+        for (let i = 0; i < encodedData.length - LOOK_BACK; i++) {
+            const x = encodedData.slice(i, i + LOOK_BACK); 
+            const yFull = encodedData[i + LOOK_BACK]; 
+            
+            if (yFull[2] === 1) continue; 
+            
+            xs.push(x);
+            ys.push([yFull[0], yFull[1]]); 
+        }
+        
+        if (xs.length === 0) return null;
+
+        const inputTensor = tf.tensor3d(xs, [xs.length, LOOK_BACK, FEATURE_SIZE]);
+        const outputTensor = tf.tensor2d(ys);
+        
+        return { inputTensor, outputTensor };
+    }
+
+    /** Entrena el modelo de ML */
+    async function trainModel() {
+        if (!model) createModel();
+
+        const data = preprocessData();
+        if (!data) {
+            statusText.textContent = `Error: Se necesitan al menos ${LOOK_BACK + 1} resultados (B/P) para entrenamiento.`;
+            return;
+        }
+
+        statusText.textContent = "Entrenando modelo LSTM... Por favor, espere. 🧠";
+        
+        const history = await model.fit(data.inputTensor, data.outputTensor, {
+            epochs: 100, 
+            batchSize: 8,
+            callbacks: {
+                onEpochEnd: (epoch, logs) => {
+                    statusText.textContent = `Entrenamiento: Época ${epoch + 1}/100 - Pérdida: ${logs.loss.toFixed(4)}`;
+                }
+            }
+        });
+        
+        const finalLoss = history.history.loss[history.history.loss.length - 1].toFixed(4);
+        isTrained = true;
+        statusText.textContent = `✅ Entrenamiento LSTM completado. Pérdida final: ${finalLoss}.`;
+        predictNextHand(); 
+    }
+
+    /** Realiza una predicción usando el modelo entrenado */
+    function predictNextHand() {
+        if (!isTrained) {
+            suggestionElement.textContent = 'Modelo sin entrenar. ¡Presiona el botón de Entrenar!';
+            probabilityText.textContent = '';
+            suggestionElement.className = '';
+            return;
+        }
+
+        const recentResults = results.slice(-LOOK_BACK);
+        
+        if (recentResults.length < LOOK_BACK) {
+            suggestionElement.textContent = `Necesitas ${LOOK_BACK - recentResults.length} resultados más para predecir.`;
+            probabilityText.textContent = '';
+            suggestionElement.className = '';
+            return;
+        }
+
+        const encodedInput = recentResults.map(r => tf.oneHot(RESULT_MAP[r], FEATURE_SIZE).arraySync());
+        const inputTensor = tf.tensor3d([encodedInput]); 
+        
+        const prediction = model.predict(inputTensor);
+        const probabilities = prediction.dataSync(); 
+        
+        const BANKER_BIAS_FACTOR = 0.01; 
+        let probBanca = probabilities[0] + BANKER_BIAS_FACTOR;
+        let probJugador = probabilities[1] - BANKER_BIAS_FACTOR;
+
+        const totalProb = probBanca + probJugador;
+        probBanca /= totalProb;
+        probJugador /= totalProb;
+
+        const finalProbabilities = [probBanca, probJugador];
+        const predictedIndex = tf.tensor1d(finalProbabilities).argMax().dataSync()[0];
+
+        const predictedOutcome = INVERSE_MAP[predictedIndex];
+        const probBancaFormatted = (probBanca * 100).toFixed(2);
+        const probJugadorFormatted = (probJugador * 100).toFixed(2);
+        
+        suggestionElement.textContent = `Sugerencia LSTM: ${predictedOutcome}`;
+        probabilityText.textContent = `Probabilidades (con sesgo): Banca ${probBancaFormatted}% | Jugador ${probJugadorFormatted}%`;
+
+        if (predictedIndex === 0) {
+            suggestionElement.className = 'pred-B';
+        } else {
+            suggestionElement.className = 'pred-P';
+        }
+
+        inputTensor.dispose();
+        prediction.dispose();
+    }
+
+    // --- Lógica de Interfaz de Usuario (UI) y Deshacer ---
+
+    function renderHistory() {
+        if (results.length === 0) {
+            resultsDisplay.innerHTML = 'Aún no hay resultados...';
+            return;
+        }
+        const resultToClass = { 'B': 'B', 'P': 'P', 'T': 'T' };
+        resultsDisplay.innerHTML = results.map(r => 
+            `<span class="${resultToClass[r]}">${r}</span>`
+        ).join('');
+    }
+
+    function addResult(result) {
+        if (results.length >= 200) { 
+            results.shift(); 
+        }
+        results.push(result);
+        renderHistory();
+        if (isTrained) {
+            predictNextHand();
+        } else {
+            suggestionElement.textContent = 'Ingresa resultados. Entrena para predecir.';
+        }
+    }
+
+    /** Función para deshacer (Volver) */
+    function undoLastResult() {
+        if (results.length > 0) {
+            const lastResult = results.pop(); // Elimina el último elemento
+            renderHistory();
+            statusText.textContent = `Resultado '${lastResult}' deshecho.`;
+            if (isTrained) {
+                predictNextHand();
+            } else if (results.length === 0) {
+                suggestionElement.textContent = 'Aún no hay resultados...';
+            }
+        } else {
+            statusText.textContent = "No hay resultados para deshacer.";
+        }
+    }
+
+    // --- Event Listeners ---
+    document.getElementById('banker-btn').addEventListener('click', () => addResult('B'));
+    document.getElementById('player-btn').addEventListener('click', () => addResult('P'));
+    document.getElementById('tie-btn').addEventListener('click', () => addResult('T'));
+    document.getElementById('undo-btn').addEventListener('click', undoLastResult); // Evento para deshacer
+    document.getElementById('train-btn').addEventListener('click', trainModel);
+
+    document.getElementById('clear-btn').addEventListener('click', () => {
+        results.length = 0;
+        isTrained = false;
+        model = null;
+        renderHistory();
+        suggestionElement.textContent = '...';
+        probabilityText.textContent = '';
+        statusText.textContent = 'Datos y modelo limpiados. Comienza de nuevo.';
+        suggestionElement.className = '';
+        createModel();
+    });
+
+    // --- Atajos de Teclado (Shortcuts) ---
+    document.addEventListener('keydown', (event) => {
+        const key = event.key.toUpperCase();
+        
+        // Atajos para ingresar resultados
+        if (key === 'B') {
+            addResult('B');
+            document.getElementById('banker-btn').focus();
+        } else if (key === 'P') {
+            addResult('P');
+            document.getElementById('player-btn').focus();
+        } else if (key === 'T') {
+            addResult('T');
+            document.getElementById('tie-btn').focus();
+        // Atajo para deshacer (Z)
+        } else if (key === 'Z') {
+            undoLastResult();
+            document.getElementById('undo-btn').focus();
+        // Atajo para entrenar (E)
+        } else if (key === 'E') {
+            trainModel();
+            document.getElementById('train-btn').focus();
+        }
+    });
+
+    // Inicializar el modelo al cargar la página
+    createModel();
+</script>
+
+</body>
+</html>
