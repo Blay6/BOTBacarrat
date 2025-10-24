@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Baccarat Predictor con LSTM (Atajos y Deshacer)</title>
+    <title>Baccarat Predictor con LSTM (GPU Optimizado)</title>
     <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@3.13.0/dist/tf.min.js"></script>
     <style>
         body {
@@ -38,7 +38,7 @@
         #tie-btn { background-color: #2ecc71; color: white; }
         
         /* Estilos del botón Entrenar */
-        #train-btn { background-color: #f39c12; color: white; } /* Color estándar/Inicial */
+        #train-btn { background-color: #f39c12; color: white; } 
         /* Nuevo estilo para sugerir reentrenamiento */
         #train-btn.suggest-retrain { 
             background-color: #2ecc71; /* Verde brillante */
@@ -101,6 +101,7 @@
         <button id="train-btn">Entrenar (E) 🧠</button>
         <button id="clear-btn">Limpiar Datos</button>
         <p class="status" id="status-text">Modelo no entrenado. Ingresa datos y entrena.</p>
+        <p id="gpu-status" class="status"></p>
     </div>
 
     <div class="history">
@@ -120,39 +121,61 @@
     const LOOK_BACK = 10; 
     const FEATURE_SIZE = 3; 
     const results = []; 
-    const REGISTERS_BEFORE_SUGGESTION = 3; // Límite de 3 nuevos registros
+    const REGISTERS_BEFORE_SUGGESTION = 3; 
     
+    // Parámetros de Optimización
+    const TRAINING_EPOCHS = 50;  // SOLICITADO: 50 épocas
+    const BATCH_SIZE_OPTIMIZED = 32; // OPTIMIZACIÓN: Aumentado para mejor rendimiento en GPU
+
     let model = null;
     let isTrained = false;
-    let newRegistersSinceTrain = 0; // Contador de nuevos registros
-    let needsRetrain = false; // Bandera para indicar que se debe reentrenar
+    let newRegistersSinceTrain = 0; 
+    let needsRetrain = false; 
 
     // Elementos del DOM
     const resultsDisplay = document.getElementById('results-display');
     const suggestionElement = document.getElementById('suggestion');
     const statusText = document.getElementById('status-text');
     const probabilityText = document.getElementById('probability-text');
-    const trainButton = document.getElementById('train-btn'); // Referencia al botón
+    const trainButton = document.getElementById('train-btn'); 
+    const gpuStatusElement = document.getElementById('gpu-status'); // Nuevo elemento para el estado de la GPU
     
     // Mapeo de resultados: B=0, P=1, T=2
     const RESULT_MAP = { 'B': 0, 'P': 1, 'T': 2 };
     const INVERSE_MAP = ['Banca (B)', 'Jugador (P)'];
-    
-    // --- Funciones de Estado y UI ---
+
+    // --- OPTIMIZACIÓN 1: Inicialización de GPU ---
+    async function initializeTF() {
+        try {
+            // Forzar el uso del backend de WebGL para usar la GPU (WebGPU si es compatible)
+            await tf.setBackend('webgl'); 
+            
+            // Opcional: Habilitar el mejor rendimiento de precisión
+            tf.ENV.set('WEBGL_RENDER_FLOAT32_CAPABLE', true);
+            
+            const backend = tf.getBackend();
+            gpuStatusElement.textContent = `✅ Backend activo: ${backend.toUpperCase()}. Entrenamiento optimizado.`;
+        } catch (error) {
+            gpuStatusElement.textContent = `❌ Error al activar GPU. Usando la CPU. Detalle: ${error.message}.`;
+        }
+        
+        createModel();
+        updateTrainButtonState(); 
+    }
+    // --------------------------------------------------
+
+    // --- Funciones de Estado y UI (Mantenidas) ---
 
     function updateTrainButtonState() {
         if (isTrained && newRegistersSinceTrain >= REGISTERS_BEFORE_SUGGESTION) {
-            // Sugerir reentrenamiento
             needsRetrain = true;
             trainButton.classList.add('suggest-retrain');
             statusText.textContent = `🚨 ¡${REGISTERS_BEFORE_SUGGESTION} nuevos resultados! Entrena de nuevo para una mejor precisión.`;
         } else if (isTrained) {
-            // Entrenado pero sin suficientes datos nuevos para sugerir
             needsRetrain = false;
             trainButton.classList.remove('suggest-retrain');
             statusText.textContent = `Modelo entrenado. Resultados nuevos: ${newRegistersSinceTrain}.`;
         } else {
-            // Nunca entrenado
             needsRetrain = false;
             trainButton.classList.remove('suggest-retrain');
             statusText.textContent = `Modelo no entrenado. Ingresa datos y entrena.`;
@@ -177,11 +200,11 @@
         results.push(result);
         
         if (isTrained) {
-            newRegistersSinceTrain++; // Incrementar solo si ya está entrenado
+            newRegistersSinceTrain++; 
         }
         
         renderHistory();
-        updateTrainButtonState(); // Actualizar el estado del botón/sugerencia
+        updateTrainButtonState(); 
         
         if (isTrained) {
             predictNextHand();
@@ -194,13 +217,12 @@
         if (results.length > 0) {
             const lastResult = results.pop(); 
             
-            // Si el modelo estaba entrenado, y deshacemos un registro nuevo, decrementamos el contador
             if (isTrained && newRegistersSinceTrain > 0) {
                 newRegistersSinceTrain--;
             }
             
             renderHistory();
-            updateTrainButtonState(); // Actualizar el estado del botón/sugerencia
+            updateTrainButtonState(); 
 
             statusText.textContent = `Resultado '${lastResult}' deshecho.`;
             if (isTrained) {
@@ -222,7 +244,7 @@
         model.add(tf.layers.dropout({ rate: 0.2 }));
         model.add(tf.layers.dense({ units: 2, activation: 'softmax' })); 
         model.compile({ optimizer: tf.train.adam(0.001), loss: 'categoricalCrossentropy', metrics: ['accuracy'] });
-        updateTrainButtonState(); // Actualizar al crear
+        updateTrainButtonState(); 
     }
 
     function preprocessData() {
@@ -258,19 +280,21 @@
         statusText.textContent = "Entrenando modelo LSTM... Por favor, espere. 🧠";
         
         const history = await model.fit(data.inputTensor, data.outputTensor, {
-            epochs: 50,
-            batchSize:32,
+            // --- OPTIMIZACIÓN 2 & 3: Épocas y Batch Size ---
+            epochs: TRAINING_EPOCHS, 
+            batchSize: BATCH_SIZE_OPTIMIZED,
+            // -----------------------------------------------
             callbacks: {
                 onEpochEnd: (epoch, logs) => {
-                    statusText.textContent = `Entrenamiento: Época ${epoch + 1}/100 - Pérdida: ${logs.loss.toFixed(4)}`;
+                    statusText.textContent = `Entrenamiento: Época ${epoch + 1}/${TRAINING_EPOCHS} - Pérdida: ${logs.loss.toFixed(4)}`;
                 }
             }
         });
         
         const finalLoss = history.history.loss[history.history.loss.length - 1].toFixed(4);
         isTrained = true;
-        newRegistersSinceTrain = 0; // RESETEAR el contador de nuevos registros
-        updateTrainButtonState(); // Actualizar el estado del botón
+        newRegistersSinceTrain = 0; 
+        updateTrainButtonState(); 
         statusText.textContent = `✅ Entrenamiento LSTM completado. Pérdida final: ${finalLoss}.`;
         predictNextHand(); 
     }
@@ -278,7 +302,6 @@
     function predictNextHand() {
         // Lógica de predicción (se mantiene)
         if (!isTrained) {
-             // ... lógica de no entrenado
              suggestionElement.textContent = 'Modelo sin entrenar. ¡Presiona el botón de Entrenar!';
              probabilityText.textContent = '';
              suggestionElement.className = '';
@@ -297,6 +320,7 @@
         const encodedInput = recentResults.map(r => tf.oneHot(RESULT_MAP[r], FEATURE_SIZE).arraySync());
         const inputTensor = tf.tensor3d([encodedInput]); 
         
+        // La predicción también se acelera automáticamente al usar el backend de WebGL (GPU)
         const prediction = model.predict(inputTensor);
         const probabilities = prediction.dataSync(); 
         
@@ -328,7 +352,7 @@
         prediction.dispose();
     }
 
-    // --- Event Listeners y Atajos (sin cambios) ---
+    // --- Event Listeners y Atajos (Mantenidos) ---
     document.getElementById('banker-btn').addEventListener('click', () => addResult('B'));
     document.getElementById('player-btn').addEventListener('click', () => addResult('P'));
     document.getElementById('tie-btn').addEventListener('click', () => addResult('T'));
@@ -360,27 +384,8 @@
         else if (key === 'E') { trainModel(); document.getElementById('train-btn').focus(); }
     });
 
-// Añadir al inicio de tu <script> o antes de llamar a createModel()
-async function initializeTF() {
-    // 1. Forzar el uso del backend de WebGL (GPU)
-    await tf.setBackend('webgl'); 
-    
-    // 2. Opcional: Configurar la GPU para que use la precisión flotante de 32 bits (default)
-    // Esto es generalmente mejor para precisión, pero se puede probar 'float16' si hay problemas de memoria.
-    tf.ENV.set('WEBGL_RENDER_FLOAT32_CAPABLE', true);
-    
-    // Si la inicialización es exitosa, se imprime el backend activo.
-    console.log("TensorFlow.js backend activo:", tf.getBackend()); 
-    createModel(); 
-    updateTrainButtonState(); 
-}
-
-// Reemplazar la llamada final
-// createModel(); // Eliminar
-// updateTrainButtonState(); // Eliminar
-
-// Llamada final para iniciar la aplicación
-initializeTF();
+    // Inicializar el modelo y el estado del botón después de activar la GPU
+    initializeTF(); 
 </script>
 
 </body>
