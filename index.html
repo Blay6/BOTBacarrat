@@ -258,8 +258,8 @@
         statusText.textContent = "Entrenando modelo LSTM... Por favor, espere. 🧠";
         
         const history = await model.fit(data.inputTensor, data.outputTensor, {
-            epochs: 100, 
-            batchSize: 8,
+            epochs: 50,
+            batchSize:32,
             callbacks: {
                 onEpochEnd: (epoch, logs) => {
                     statusText.textContent = `Entrenamiento: Época ${epoch + 1}/100 - Pérdida: ${logs.loss.toFixed(4)}`;
@@ -360,9 +360,27 @@
         else if (key === 'E') { trainModel(); document.getElementById('train-btn').focus(); }
     });
 
-    // Inicializar el modelo y el estado del botón
-    createModel();
-    updateTrainButtonState();
+// Añadir al inicio de tu <script> o antes de llamar a createModel()
+async function initializeTF() {
+    // 1. Forzar el uso del backend de WebGL (GPU)
+    await tf.setBackend('webgl'); 
+    
+    // 2. Opcional: Configurar la GPU para que use la precisión flotante de 32 bits (default)
+    // Esto es generalmente mejor para precisión, pero se puede probar 'float16' si hay problemas de memoria.
+    tf.ENV.set('WEBGL_RENDER_FLOAT32_CAPABLE', true);
+    
+    // Si la inicialización es exitosa, se imprime el backend activo.
+    console.log("TensorFlow.js backend activo:", tf.getBackend()); 
+    createModel(); 
+    updateTrainButtonState(); 
+}
+
+// Reemplazar la llamada final
+// createModel(); // Eliminar
+// updateTrainButtonState(); // Eliminar
+
+// Llamada final para iniciar la aplicación
+initializeTF();
 </script>
 
 </body>
